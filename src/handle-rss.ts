@@ -1,5 +1,6 @@
 import Parser from 'rss-parser';
 import dotenv from 'dotenv';
+import got from 'got';
 import { JSDOM } from 'jsdom';
 import { consola } from 'consola';
 
@@ -38,7 +39,7 @@ function getDoubanRSSUrl(): string {
 }
 
 function getDoubanRSSHeaders(): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     'User-Agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     Accept:
@@ -47,6 +48,25 @@ function getDoubanRSSHeaders(): Record<string, string> {
     Referer: 'https://www.douban.com/',
     Connection: 'keep-alive',
   };
+
+  const cookie = process.env.DOUBAN_COOKIE?.trim();
+
+  if (cookie) {
+    headers.Cookie = cookie;
+  }
+
+  return headers;
+}
+
+function looksLikeDoubanLoginPage(body: string): boolean {
+  const preview = body.slice(0, 1000).toLowerCase();
+
+  return (
+    /<html[\s>]/i.test(body) &&
+    (preview.includes('豆瓣 - 登录跳转页') ||
+      preview.includes('登录跳转页') ||
+      preview.includes('login'))
+  );
 }
 
 export async function fetchRSSFeeds(): Promise<RSSFeedItem[]> {
@@ -56,16 +76,22 @@ export async function fetchRSSFeeds(): Promise<RSSFeedItem[]> {
   try {
     consola.info(`Fetching Douban RSS: ${rssUrl}`);
 
-    const response = await fetch(rssUrl, {
-      method: 'GET',
+    const response = await got.get(rssUrl, {
       headers: getDoubanRSSHeaders(),
-      redirect: 'follow',
+      followRedirect: true,
+      throwHttpErrors: false,
     });
 
-    const body = await response.text();
+    const body = response.body;
 
-    if (!response.ok) {
-      consola.error(`Failed to fetch Douban RSS. HTTP status: ${response.status}`);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      consola.error(`Failed to fetch Douban RSS. HTTP status: ${response.statusCode}`);
+      consola.error(`Response preview:\n${body.slice(0, 500)}`);
+      process.exit(1);
+    }
+
+    if (looksLikeDoubanLoginPage(body)) {
+      consola.error('Douban RSS returned login page. Please update DOUBAN_COOKIE secret.');
       consola.error(`Response preview:\n${body.slice(0, 500)}`);
       process.exit(1);
     }

@@ -65,4 +65,5 @@ jobs:
       - name: Run sync
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          DOUBAN_COOKIE: ${{ secrets.DOUBAN_COOKIE }}
         run: npm run sync
