@@ -42,7 +42,10 @@ export const PropertyTypeMap: Record<DB_PROPERTIES_KEYS, NotionPropTypesEnum> = 
   GAME_TITLE: NotionPropTypesEnum.TITLE,
   DRAMA_TITLE: NotionPropTypesEnum.TITLE,
   COVER: NotionPropTypesEnum.FILES,
-  RATING: NotionPropTypesEnum.MULTI_SELECT,
+
+  // 修复：你的 Notion 数据库里“个人评分”是 Number，不是 Multi-select
+  RATING: NotionPropTypesEnum.NUMBER,
+
   RATING_DATE: NotionPropTypesEnum.DATE,
   COMMENTS: NotionPropTypesEnum.RICH_TEXT,
   YEAR: NotionPropTypesEnum.NUMBER,
@@ -54,7 +57,10 @@ export const PropertyTypeMap: Record<DB_PROPERTIES_KEYS, NotionPropTypesEnum> = 
   IMDB_LINK: NotionPropTypesEnum.URL,
   RELEASE_DATE: NotionPropTypesEnum.DATE,
   MUSICIAN: NotionPropTypesEnum.RICH_TEXT,
-  PUBLICATION_DATE: NotionPropTypesEnum.DATE,
+
+  // 修复：你的 Notion 数据库里“出版日期”是 Rich text，不是 Date
+  PUBLICATION_DATE: NotionPropTypesEnum.RICH_TEXT,
+
   PUBLISHING_HOUSE: NotionPropTypesEnum.RICH_TEXT,
   WRITER: NotionPropTypesEnum.RICH_TEXT,
   ISBN: NotionPropTypesEnum.NUMBER,
