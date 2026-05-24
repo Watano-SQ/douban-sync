@@ -2,6 +2,9 @@ import { consola } from 'consola';
 import dayjs from 'dayjs';
 import dotenv from 'dotenv';
 import got from 'got';
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { Client } from '@notionhq/client';
 import { type CreatePageParameters } from '@notionhq/client/build/src/api-endpoints';
 
@@ -27,7 +30,6 @@ const notion = new Client({
   notionVersion: '2025-09-03',
 });
 
-const GITHUB_API_BASE = 'https://api.github.com';
 const DOUBAN_COVER_CACHE_DIR = 'covers/douban';
 const IMAGE_REQUEST_HEADERS = {
   'User-Agent':
@@ -204,7 +206,7 @@ function getRawExternalImageUrl(itemData: {
   return url;
 }
 
-function encodeGitHubPath(path: string): string {
+function encodeRawGitHubPath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
@@ -225,7 +227,7 @@ function buildCachedCoverPath(url: string): string {
 }
 
 function buildRawGitHubUrl(repo: string, branch: string, path: string): string {
-  return `https://raw.githubusercontent.com/${repo}/${branch}/${encodeGitHubPath(path)}`;
+  return `https://raw.githubusercontent.com/${repo}/${branch}/${encodeRawGitHubPath(path)}`;
 }
 
 function isDoubanioUrl(url: string): boolean {
@@ -236,101 +238,49 @@ function isDoubanioUrl(url: string): boolean {
   }
 }
 
-function getGitHubApiHeaders(token: string): Record<string, string> {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-}
-
-async function githubContentExists(
-  repo: string,
-  branch: string,
-  path: string,
-  token: string,
-): Promise<boolean> {
-  const encodedPath = encodeGitHubPath(path);
-  const url = `${GITHUB_API_BASE}/repos/${repo}/contents/${encodedPath}`;
-
-  try {
-    await got.get(url, {
-      searchParams: {
-        ref: branch,
-      },
-      headers: getGitHubApiHeaders(token),
-    });
-
-    return true;
-  } catch (error: any) {
-    if (error?.response?.statusCode === 404) {
-      return false;
-    }
-
-    throw error;
-  }
-}
-
-async function uploadCoverToGitHub(
-  sourceUrl: string,
-  repo: string,
-  branch: string,
-  path: string,
-  token: string,
-): Promise<string> {
-  const imageResponse = await got.get(sourceUrl, {
-    responseType: 'buffer',
-    headers: IMAGE_REQUEST_HEADERS,
-  });
-  const contentTypeHeader = imageResponse.headers['content-type'];
-  const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
-
-  if (!contentType?.toLowerCase().startsWith('image/')) {
-    throw new Error(`Unexpected cover content type: ${contentType || 'unknown'}`);
-  }
-
-  const encodedPath = encodeGitHubPath(path);
-  const url = `${GITHUB_API_BASE}/repos/${repo}/contents/${encodedPath}`;
-
-  await got.put(url, {
-    headers: getGitHubApiHeaders(token),
-    json: {
-      message: `Cache Douban cover ${getImageFileNameFromUrl(sourceUrl)}`,
-      content: imageResponse.body.toString('base64'),
-      branch,
-    },
-  });
-
-  return buildRawGitHubUrl(repo, branch, path);
-}
-
 async function cacheCoverForNotion(sourceUrl?: string): Promise<string | undefined> {
-  if (!sourceUrl || !isDoubanioUrl(sourceUrl)) {
+  if (!sourceUrl) {
+    return undefined;
+  }
+
+  if (!isDoubanioUrl(sourceUrl)) {
     return sourceUrl;
   }
 
   const repo = process.env.GITHUB_REPOSITORY;
   const branch = process.env.GITHUB_REF_NAME || 'main';
-  const token = process.env.GITHUB_TOKEN;
-  const path = buildCachedCoverPath(sourceUrl);
+  const cachedCoverPath = buildCachedCoverPath(sourceUrl);
+
+  if (!repo) {
+    consola.warn(`Missing GITHUB_REPOSITORY. Fall back to original cover url: ${sourceUrl}`);
+    return sourceUrl;
+  }
+
+  const rawUrl = buildRawGitHubUrl(repo, branch, cachedCoverPath);
+  const localPath = path.join(process.cwd(), ...cachedCoverPath.split('/'));
 
   try {
-    if (!repo || !token) {
-      throw new Error('Missing GITHUB_REPOSITORY or GITHUB_TOKEN.');
-    }
-
-    const rawUrl = buildRawGitHubUrl(repo, branch, path);
-    const exists = await githubContentExists(repo, branch, path, token);
-
-    if (exists) {
-      consola.info(`Using cached cover: ${rawUrl}`);
+    if (existsSync(localPath)) {
+      consola.info(`Using cached cover: ${cachedCoverPath}`);
       return rawUrl;
     }
 
-    const uploadedUrl = await uploadCoverToGitHub(sourceUrl, repo, branch, path, token);
+    const imageResponse = await got.get(sourceUrl, {
+      responseType: 'buffer',
+      headers: IMAGE_REQUEST_HEADERS,
+    });
+    const contentTypeHeader = imageResponse.headers['content-type'];
+    const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
 
-    consola.success(`Cached Douban cover to GitHub: ${uploadedUrl}`);
-    return uploadedUrl;
+    if (!contentType?.toLowerCase().startsWith('image/')) {
+      throw new Error(`Unexpected cover content type: ${contentType || 'unknown'}`);
+    }
+
+    await mkdir(path.dirname(localPath), { recursive: true });
+    await writeFile(localPath, imageResponse.body);
+
+    consola.success(`Cached Douban cover locally: ${cachedCoverPath}`);
+    return rawUrl;
   } catch (error) {
     consola.warn(`Failed to cache cover. Fall back to original cover url: ${sourceUrl}`);
     consola.warn(error);

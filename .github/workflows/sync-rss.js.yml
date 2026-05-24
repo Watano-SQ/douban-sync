@@ -67,3 +67,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DOUBAN_COOKIE: ${{ secrets.DOUBAN_COOKIE }}
         run: npm run sync
+
+      - name: Commit cached covers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add covers/douban || true
+          if git diff --cached --quiet; then
+            echo "No cached covers to commit."
+          else
+            git commit -m "Cache Douban cover images"
+            git push
+          fi
