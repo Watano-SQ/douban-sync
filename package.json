@@ -5,7 +5,8 @@
   "exports": "./index.js",
   "type": "module",
   "scripts": {
-    "sync": "tsx src/index.ts"
+    "sync": "tsx src/index.ts",
+    "backfill:covers": "tsx src/backfill-book-covers.ts"
   },
   "repository": {
     "type": "git",

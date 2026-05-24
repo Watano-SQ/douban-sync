@@ -1,0 +1,63 @@
+name: backfill-book-covers
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only"
+        required: false
+        default: "true"
+      force:
+        description: "Update pages even if they already have cover"
+        required: false
+        default: "false"
+      limit:
+        description: "Max pages to process"
+        required: false
+        default: "20"
+
+permissions:
+  contents: write
+
+jobs:
+  backfill-book-covers:
+    runs-on: ubuntu-latest
+    environment: DOUBAN
+
+    env:
+      DOUBAN_USER_ID: ${{ secrets.DOUBAN_USER_ID || vars.DOUBAN_USER_ID }}
+      DOUBAN_COOKIE: ${{ secrets.DOUBAN_COOKIE }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || vars.NOTION_TOKEN }}
+      NOTION_BOOK_DATABASE_ID: ${{ secrets.NOTION_BOOK_DATABASE_ID || vars.NOTION_BOOK_DATABASE_ID }}
+      GITHUB_TOKEN: ${{ github.token }}
+      BACKFILL_DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '0' }}
+      BACKFILL_FORCE: ${{ inputs.force == 'true' && '1' || '0' }}
+      BACKFILL_LIMIT: ${{ inputs.limit }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Backfill book covers
+        run: npm run backfill:covers
+
+      - name: Commit cached covers
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add covers/douban || true
+          if git diff --cached --quiet; then
+            echo "No cached covers to commit."
+          else
+            git commit -m "Backfill Douban cover images"
+            git push
+          fi
