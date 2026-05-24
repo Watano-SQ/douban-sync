@@ -2,6 +2,7 @@ import Parser from 'rss-parser';
 import dotenv from 'dotenv';
 import { JSDOM } from 'jsdom';
 import { consola } from 'consola';
+
 import {
   ALL_STATUS,
   RATING_TEXT,
@@ -21,18 +22,57 @@ type ItemInfo = {
   category: ItemCategory;
   id: string;
   status: ItemStatus;
-}
+};
 
 dotenv.config();
 
+function getDoubanRSSUrl(): string {
+  const DOUBAN_USER_ID = process.env.DOUBAN_USER_ID?.trim();
+
+  if (!DOUBAN_USER_ID) {
+    consola.error('Missing environment variable: DOUBAN_USER_ID');
+    process.exit(1);
+  }
+
+  return `https://www.douban.com/feed/people/${DOUBAN_USER_ID}/interests`;
+}
+
+function getDoubanRSSHeaders(): Record<string, string> {
+  return {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    Accept:
+      'application/rss+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    Referer: 'https://www.douban.com/',
+    Connection: 'keep-alive',
+  };
+}
+
 export async function fetchRSSFeeds(): Promise<RSSFeedItem[]> {
-  const DOUBAN_USER_ID = process.env.DOUBAN_USER_ID;
+  const rssUrl = getDoubanRSSUrl();
   const parser = new Parser();
+
   try {
-    const feeds = await parser.parseURL(
-      `https://www.douban.com/feed/people/${DOUBAN_USER_ID}/interests`
-    );
-    return feeds.items;
+    consola.info(`Fetching Douban RSS: ${rssUrl}`);
+
+    const response = await fetch(rssUrl, {
+      method: 'GET',
+      headers: getDoubanRSSHeaders(),
+      redirect: 'follow',
+    });
+
+    const body = await response.text();
+
+    if (!response.ok) {
+      consola.error(`Failed to fetch Douban RSS. HTTP status: ${response.status}`);
+      consola.error(`Response preview:\n${body.slice(0, 500)}`);
+      process.exit(1);
+    }
+
+    const feeds = await parser.parseString(body);
+
+    return feeds.items as RSSFeedItem[];
   } catch (error) {
     consola.error('Failed to parse RSS url: ', error);
     process.exit(1);
@@ -50,38 +90,47 @@ export function handleRSSFeeds(feeds: RSSFeedItem[]): FeedItem[] {
 
   feeds.forEach((item) => {
     const itemInfo = extractItemInfo(item.title!, item.link!);
+
     if (!itemInfo) {
       return;
     }
+
     const { category, id, status } = itemInfo;
+
     const dom = new JSDOM(item.content!.trim());
     const contents = [...dom.window.document.querySelectorAll('td p')];
+
     const ratingElements = contents.filter((el) => el.textContent!.startsWith('推荐'));
     let ratingNumber = 0;
+
     if (ratingElements.length) {
       const rating = ratingElements[0].textContent!.replace(/^推荐: /, '').trim();
+
       ratingNumber = RATING_TEXT[rating as keyof typeof RATING_TEXT];
     }
+
     const commentElements = contents.filter((el) => el.textContent!.startsWith('备注'));
     let comment = '';
+
     if (commentElements.length) {
       comment = commentElements[0].textContent!.replace(/^备注: /, '').trim();
     }
+
     const result = {
       id,
       link: item.link,
       rating: ratingNumber || null,
-      comment: typeof comment === 'string' ? comment : null, // 备注：XXX -> 短评
-      time: item.isoDate, // '2021-05-30T06:49:34.000Z'
+      comment: typeof comment === 'string' ? comment : null,
+      time: item.isoDate,
       status,
       category,
     } as FeedItem;
+
     normalizedFeeds.push(result);
   });
 
   return normalizedFeeds;
 }
-
 
 /**
  * Extracts the category, ID, and status from the given title and link
@@ -99,7 +148,10 @@ export function extractItemInfo(title: string, link: string): ItemInfo | undefin
   }
 
   if (Object.keys(SeeState).includes(m)) {
-    const isMovie = link.startsWith('http://movie.douban.com/') || link.startsWith('https://movie.douban.com/');
+    const isMovie =
+      link.startsWith('http://movie.douban.com/') ||
+      link.startsWith('https://movie.douban.com/');
+
     return {
       category: isMovie ? ItemCategory.Movie : ItemCategory.Drama,
       id: isMovie
@@ -107,19 +159,25 @@ export function extractItemInfo(title: string, link: string): ItemInfo | undefin
         : link.match(/www\.douban\.com\/location\/drama\/(\d+)\/?/)?.[1]!,
       status: SeeState[m as keyof typeof SeeState],
     };
-  } else if (Object.keys(ReadState).includes(m)) {
+  }
+
+  if (Object.keys(ReadState).includes(m)) {
     return {
       category: ItemCategory.Book,
       id: link.match(/book\.douban\.com\/subject\/(\d+)\/?/)?.[1]!,
       status: ReadState[m as keyof typeof ReadState],
     };
-  } else if (Object.keys(ListenState).includes(m)) {
+  }
+
+  if (Object.keys(ListenState).includes(m)) {
     return {
       category: ItemCategory.Music,
       id: link.match(/music\.douban\.com\/subject\/(\d+)\/?/)?.[1]!,
       status: ListenState[m as keyof typeof ListenState],
     };
-  } else if (Object.keys(PlayState).includes(m)) {
+  }
+
+  if (Object.keys(PlayState).includes(m)) {
     return {
       category: ItemCategory.Game,
       id: link.match(/www\.douban\.com\/game\/(\d+)\/?/)?.[1]!,
