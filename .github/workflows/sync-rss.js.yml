@@ -11,7 +11,7 @@ permissions:
 jobs:
   sync-rss:
     runs-on: ubuntu-latest
-    environment: production
+    environment: DOUBAN
 
     env:
       DOUBAN_USER_ID: ${{ secrets.DOUBAN_USER_ID || vars.DOUBAN_USER_ID }}
