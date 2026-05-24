@@ -1,41 +1,66 @@
-# This workflow will do a clean install of node dependencies, build the source code and run tests across different versions of node
-# For more information see: https://help.github.com/actions/language-and-framework-guides/using-nodejs-with-github-actions
-
 name: sync-rss
 
 on:
-  workflow_dispatch: # manual trigger
+  workflow_dispatch:
   schedule:
-    # https://docs.github.com/en/actions/reference/events-that-trigger-workflows#scheduled-events
-    # Runs every 6 hours
-    - cron:  '0 */6 * * *'
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-
+  sync-rss:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [24.x]
-        # See supported Node.js release schedule at https://nodejs.org/en/about/previous-releases
-
     env:
-      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-      NOTION_MOVIE_DATABASE_ID: ${{ secrets.NOTION_MOVIE_DATABASE_ID }}
-      NOTION_MUSIC_DATABASE_ID: ${{ secrets.NOTION_MUSIC_DATABASE_ID }}
-      NOTION_BOOK_DATABASE_ID: ${{ secrets.NOTION_BOOK_DATABASE_ID }}
-      NOTION_GAME_DATABASE_ID: ${{ secrets.NOTION_GAME_DATABASE_ID }}
-      NOTION_DRAMA_DATABASE_ID: ${{ secrets.NOTION_DRAMA_DATABASE_ID }}
-      DOUBAN_USER_ID: ${{ secrets.DOUBAN_USER_ID }}
-      NEODB_API_TOKEN: ${{ secrets.NEODB_API_TOKEN }}
+      # Required
+      DOUBAN_USER_ID: ${{ secrets.DOUBAN_USER_ID || vars.DOUBAN_USER_ID }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || vars.NOTION_TOKEN }}
+      NOTION_BOOK_DATABASE_ID: ${{ secrets.NOTION_BOOK_DATABASE_ID || vars.NOTION_BOOK_DATABASE_ID }}
+
+      # Optional
+      NOTION_MOVIE_DATABASE_ID: ${{ secrets.NOTION_MOVIE_DATABASE_ID || vars.NOTION_MOVIE_DATABASE_ID }}
+      NOTION_MUSIC_DATABASE_ID: ${{ secrets.NOTION_MUSIC_DATABASE_ID || vars.NOTION_MUSIC_DATABASE_ID }}
+      NOTION_GAME_DATABASE_ID: ${{ secrets.NOTION_GAME_DATABASE_ID || vars.NOTION_GAME_DATABASE_ID }}
+      NOTION_DRAMA_DATABASE_ID: ${{ secrets.NOTION_DRAMA_DATABASE_ID || vars.NOTION_DRAMA_DATABASE_ID }}
+      NEODB_API_TOKEN: ${{ secrets.NEODB_API_TOKEN || vars.NEODB_API_TOKEN }}
       NEODB_VISIBILITY: ${{ vars.NEODB_VISIBILITY || '2' }}
 
     steps:
-    - uses: actions/checkout@v6
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v6
-      with:
-        node-version: ${{ matrix.node-version }}
-    - run: npm ci
-    - run: npm run sync || exit 1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify required environment variables
+        run: |
+          node - <<'NODE'
+          const required = [
+            'DOUBAN_USER_ID',
+            'NOTION_TOKEN',
+            'NOTION_BOOK_DATABASE_ID',
+          ];
+
+          let ok = true;
+
+          for (const key of required) {
+            const value = process.env[key];
+            console.log(`${key}: ${value ? 'SET' : 'EMPTY'}`);
+            if (!value) ok = false;
+          }
+
+          if (!ok) {
+            console.error('Required environment variables are missing. Check repository Secrets/Variables and the branch selected by workflow_dispatch.');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Run sync
+        run: npm run sync
