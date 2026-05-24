@@ -1,8 +1,9 @@
 import { consola } from 'consola';
 import dayjs from 'dayjs';
 import dotenv from 'dotenv';
-import { Client, type DatabaseObjectResponse } from '@notionhq/client';
+import { Client } from '@notionhq/client';
 import { type CreatePageParameters } from '@notionhq/client/build/src/api-endpoints';
+
 import scrapyDouban from './handle-douban';
 import { getDataSourceId, sleep, buildPropertyValue } from './utils';
 import { PropertyTypeMap, EMOJI } from './const';
@@ -16,7 +17,7 @@ import {
 } from './types';
 
 // https://github.com/makenotion/notion-sdk-js/issues/280#issuecomment-1178523498
-type EmojiRequest = Extract<CreatePageParameters['icon'], { type?: 'emoji'; }>['emoji'];
+type EmojiRequest = Extract<CreatePageParameters['icon'], { type: 'emoji' }>['emoji'];
 
 dotenv.config();
 
@@ -26,13 +27,8 @@ const notion = new Client({
 });
 
 /**
- * Asynchronously handles the Notion feeds by grouping them by category and then
- * syncing the categorized feeds to the Notion database as one category corresponding
- * to one Notion database.
- *
- * @param {FeedItem[]} feeds - The array of feed items to be handled
- * @return {Promise<void>} A promise that resolves when all feeds are synced to
- * the Notion database
+ * Handles Notion feeds by grouping them by category and syncing each category
+ * to its corresponding Notion data source.
  */
 export default async function handleNotion(feeds: FeedItem[]): Promise<void> {
   const groupByCategory: Partial<Record<ItemCategory, FeedItem[]>> = feeds.reduce(
@@ -40,50 +36,54 @@ export default async function handleNotion(feeds: FeedItem[]): Promise<void> {
       if (!acc[feed.category]) {
         acc[feed.category] = [];
       }
+
       acc[feed.category]!.push(feed);
       return acc;
     },
     {} as Partial<Record<ItemCategory, FeedItem[]>>,
   );
 
-  const AllFailedItems: FailedItem[] = [];
+  const allFailedItems: FailedItem[] = [];
 
   for (const category in groupByCategory) {
     try {
       const categorizedFeeds = groupByCategory[category as ItemCategory] as FeedItem[];
       const failed = await syncNotionDB(categorizedFeeds, category as ItemCategory);
+
       if (failed) {
-        AllFailedItems.push(...failed);
+        allFailedItems.push(...failed);
       }
     } catch (error) {
-      consola.error(`Failed to handle ${category} feeds. `, error);
+      consola.error(`Failed to handle ${category} feeds.\n`, error);
       process.exit(1);
     }
   }
 
-  if (AllFailedItems.length) {
+  if (allFailedItems.length) {
     consola.warn('Failed to handle the following feeds to insert into Notion:');
-    for (const item of AllFailedItems) {
+
+    for (const item of allFailedItems) {
       consola.warn(`${item.title}: ${item.link}`);
     }
+
     process.exit(1);
   }
 }
 
 /**
- * Asynchronously synchronizes the Notion database with categorized feeds.
- *
- * @param {FeedItem[]} categorizedFeeds - the array of categorized feed items
- * @param {ItemCategory} category - the category of the feed items
- * @return {Promise<FailedItem[] | undefined>} an array of failed items or undefined
+ * Synchronizes one category of feed items to its corresponding Notion data source.
  */
-async function syncNotionDB(categorizedFeeds: FeedItem[], category: ItemCategory): Promise<FailedItem[] | undefined> {
+async function syncNotionDB(
+  categorizedFeeds: FeedItem[],
+  category: ItemCategory,
+): Promise<FailedItem[] | undefined> {
   if (categorizedFeeds.length === 0) {
     consola.info(`No new ${category} feeds.`);
     return;
   }
 
   const dataSourceId = getDataSourceId(category);
+
   if (!dataSourceId) {
     consola.warn(`No notion data source id for ${category}`);
     return;
@@ -91,28 +91,38 @@ async function syncNotionDB(categorizedFeeds: FeedItem[], category: ItemCategory
 
   consola.start(`Handling ${category} feeds...`);
 
-  // after @notionhq sdk upgraded to v5.0.0, use dataSource instead of database
-  const queryItems = await notion.dataSources.query({
-    data_source_id: dataSourceId,
-    filter: {
-      or: categorizedFeeds.map((item) => ({
-        property: DB_PROPERTIES.ITEM_LINK,
-        url: {
-          contains: item.id,
-        },
-      })),
-    },
-  }).catch((error) => {
-    consola.error(`Failed to query ${category} database to check already inserted items. `, error);
-    process.exit(1);
-  });
+  // After @notionhq/sdk upgraded to v5.0.0, use dataSource instead of database.
+  const queryItems = await notion.dataSources
+    .query({
+      data_source_id: dataSourceId,
+      filter: {
+        or: categorizedFeeds.map((item) => ({
+          property: DB_PROPERTIES.ITEM_LINK,
+          url: {
+            contains: item.id,
+          },
+        })),
+      },
+    })
+    .catch((error) => {
+      consola.error(
+        `Failed to query ${category} database to check already inserted items.\n`,
+        error,
+      );
+      process.exit(1);
+    });
 
-  const alreadyInsertedItems = new Set(queryItems.results.map((i) => {
-    if ('properties' in i) {
-      return (i.properties[DB_PROPERTIES.ITEM_LINK] as NotionUrlPropType).url;
-    }
-    return;
-  }).filter(v => v));
+  const alreadyInsertedItems = new Set<string>(
+    queryItems.results
+      .map((i) => {
+        if ('properties' in i) {
+          return (i.properties[DB_PROPERTIES.ITEM_LINK] as NotionUrlPropType).url;
+        }
+
+        return undefined;
+      })
+      .filter((v): v is string => Boolean(v)),
+  );
 
   const newFeeds = categorizedFeeds.filter((item) => {
     return !alreadyInsertedItems.has(item.link);
@@ -125,19 +135,22 @@ async function syncNotionDB(categorizedFeeds: FeedItem[], category: ItemCategory
   for (const newFeedItem of newFeeds) {
     try {
       const itemData = await scrapyDouban(newFeedItem.link, category);
+
       itemData[DB_PROPERTIES.ITEM_LINK] = newFeedItem.link;
       itemData[DB_PROPERTIES.RATING] = newFeedItem.rating;
       itemData[DB_PROPERTIES.RATING_DATE] = dayjs(newFeedItem.time).format('YYYY-MM-DD');
       itemData[DB_PROPERTIES.COMMENTS] = newFeedItem.comment;
+
       const successful = await addItemToNotion(itemData, category);
+
       if (!successful) {
         failedItems.push({
           link: newFeedItem.link,
-          title: itemData.title as string,
+          title: String(itemData[DB_PROPERTIES.NAME] || newFeedItem.link),
         });
       }
-      await sleep(1000);
 
+      await sleep(1000);
     } catch (error) {
       consola.error(error);
       continue;
@@ -147,50 +160,96 @@ async function syncNotionDB(categorizedFeeds: FeedItem[], category: ItemCategory
   if (failedItems.length) {
     consola.error(`Failed to insert ${failedItems.length} items into ${category} Notion database.`);
   }
+
   consola.success(`${category} feeds done.`);
   consola.log('====================');
+
   return failedItems;
 }
 
 /**
- * Insert an item to Notion database.
+ * Extracts the raw external poster/cover URL from scraped Douban item data.
  *
- * @param {object} itemData - The data of the item to be added to the Notion database.
- * @param {ItemCategory} category - The category of the item.
- * @return {boolean} Indicates whether the item was successfully added to the database.
+ * Important:
+ * This reads from raw itemData, not from Notion properties.
+ * Notion properties may later be filtered by existing data source columns.
+ * If the Notion database does not have a "封面" or "海报" column, the property
+ * would be deleted; but page cover should still be set.
  */
-async function addItemToNotion(itemData: {
+function getRawExternalImageUrl(itemData: {
+  [key: string]: string | string[] | number | null | undefined;
+}): string | undefined {
+  const value = itemData[DB_PROPERTIES.POSTER] || itemData[DB_PROPERTIES.COVER];
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const url = value.trim();
+
+  if (!/^https?:\/\//i.test(url)) {
+    return undefined;
+  }
+
+  return url;
+}
+
+/**
+ * Inserts one item into a Notion data source.
+ */
+async function addItemToNotion(
+  itemData: {
     [key: string]: string | string[] | number | null | undefined;
-}, category: ItemCategory): Promise<boolean> {
+  },
+  category: ItemCategory,
+): Promise<boolean> {
   consola.start(
     'Going to insert ',
     itemData[DB_PROPERTIES.RATING_DATE],
-    itemData[DB_PROPERTIES.NAME]
+    itemData[DB_PROPERTIES.NAME],
   );
+
   try {
+    const rawCoverUrl = getRawExternalImageUrl(itemData);
+
     const properties: Record<string, any> = {};
-    const keys = Object.keys(DB_PROPERTIES) as DB_PROPERTIES_KEYS[];
-    keys.shift(); // remove fist one NAME
+
+    const keys = (Object.keys(DB_PROPERTIES) as Array<keyof typeof DB_PROPERTIES>).filter(
+      (key) => key !== 'NAME',
+    ) as DB_PROPERTIES_KEYS[];
+
     keys.forEach((key) => {
-      if (itemData[DB_PROPERTIES[key]]) {
-        properties[DB_PROPERTIES[key]] = buildPropertyValue(
-          itemData[DB_PROPERTIES[key]],
-          PropertyTypeMap[key],
-          DB_PROPERTIES[key]
-        );
+      const propertyName = DB_PROPERTIES[key];
+      const value = itemData[propertyName];
+
+      if (value === undefined || value === null || value === '') {
+        return;
+      }
+
+      const propertyValue = buildPropertyValue(value, PropertyTypeMap[key], propertyName);
+
+      if (propertyValue) {
+        properties[propertyName] = propertyValue;
       }
     });
 
     const dataSourceId = getDataSourceId(category);
+
     if (!dataSourceId) {
       throw new Error('No data source id found for category: ' + category);
     }
 
-    const db = await notion.dataSources.retrieve({ data_source_id: dataSourceId });
+    const db = await notion.dataSources.retrieve({
+      data_source_id: dataSourceId,
+    });
+
     const columns = Object.keys(db.properties);
-    // remove cols which are not in the current database
+
+    // Remove columns which are not in the current Notion data source.
+    // rawCoverUrl has already been captured before this filtering.
     const propKeys = Object.keys(properties);
-    propKeys.map((prop) => {
+
+    propKeys.forEach((prop) => {
       if (columns.indexOf(prop) < 0) {
         delete properties[prop];
       }
@@ -198,35 +257,50 @@ async function addItemToNotion(itemData: {
 
     const postData: CreatePageParameters = {
       parent: {
-        type: "data_source_id",
+        type: 'data_source_id',
         data_source_id: dataSourceId,
       },
       icon: {
         type: 'emoji',
         emoji: EMOJI[category] as EmojiRequest,
       },
-      // fill in properties by the format: https://developers.notion.com/reference/page#page-property-value
       properties,
     };
 
-    if (properties[DB_PROPERTIES.POSTER] || properties[DB_PROPERTIES.COVER]) {
-      // use poster for the page cover
+    if (rawCoverUrl) {
+      // Use Douban poster/cover as Notion page cover.
       postData.cover = {
         type: 'external',
         external: {
-          url: (properties[DB_PROPERTIES.POSTER] || properties[DB_PROPERTIES.COVER])?.files[0]?.external?.url, // cannot be empty string or null
+          url: rawCoverUrl,
         },
       };
+
+      // Also put the same image into the page body.
+      postData.children = [
+        {
+          object: 'block',
+          type: 'image',
+          image: {
+            type: 'external',
+            external: {
+              url: rawCoverUrl,
+            },
+          },
+        },
+      ] as any;
     }
 
     const response = await notion.pages.create(postData);
+
     if (response && response.id) {
       consola.success(
         itemData[DB_PROPERTIES.NAME] +
           `[${itemData[DB_PROPERTIES.ITEM_LINK]}]` +
-          ' page inserted into Notion database.'
+          ' page inserted into Notion database.',
       );
     }
+
     return true;
   } catch (error) {
     consola.error(
@@ -234,8 +308,9 @@ async function addItemToNotion(itemData: {
         itemData[DB_PROPERTIES.NAME] +
         `(${itemData[DB_PROPERTIES.ITEM_LINK]})` +
         ' with error: ',
-      error
+      error,
     );
+
     return false;
   }
 }
