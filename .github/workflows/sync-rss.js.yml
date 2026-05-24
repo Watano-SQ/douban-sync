@@ -11,14 +11,13 @@ permissions:
 jobs:
   sync-rss:
     runs-on: ubuntu-latest
+    environment: production
 
     env:
-      # Required
       DOUBAN_USER_ID: ${{ secrets.DOUBAN_USER_ID || vars.DOUBAN_USER_ID }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN || vars.NOTION_TOKEN }}
       NOTION_BOOK_DATABASE_ID: ${{ secrets.NOTION_BOOK_DATABASE_ID || vars.NOTION_BOOK_DATABASE_ID }}
 
-      # Optional
       NOTION_MOVIE_DATABASE_ID: ${{ secrets.NOTION_MOVIE_DATABASE_ID || vars.NOTION_MOVIE_DATABASE_ID }}
       NOTION_MUSIC_DATABASE_ID: ${{ secrets.NOTION_MUSIC_DATABASE_ID || vars.NOTION_MUSIC_DATABASE_ID }}
       NOTION_GAME_DATABASE_ID: ${{ secrets.NOTION_GAME_DATABASE_ID || vars.NOTION_GAME_DATABASE_ID }}
@@ -57,7 +56,8 @@ jobs:
           }
 
           if (!ok) {
-            console.error('Required environment variables are missing. Check repository Secrets/Variables and the branch selected by workflow_dispatch.');
+            console.error('Required environment variables are missing.');
+            console.error('If you used Environment secrets, make sure the environment name in workflow matches exactly.');
             process.exit(1);
           }
           NODE
