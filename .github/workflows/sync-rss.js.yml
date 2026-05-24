@@ -6,7 +6,7 @@ on:
     - cron: "0 */6 * * *"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   sync-rss:
@@ -63,4 +63,6 @@ jobs:
           NODE
 
       - name: Run sync
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run sync

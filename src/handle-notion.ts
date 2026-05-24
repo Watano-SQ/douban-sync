@@ -1,6 +1,7 @@
 import { consola } from 'consola';
 import dayjs from 'dayjs';
 import dotenv from 'dotenv';
+import got from 'got';
 import { Client } from '@notionhq/client';
 import { type CreatePageParameters } from '@notionhq/client/build/src/api-endpoints';
 
@@ -25,6 +26,15 @@ const notion = new Client({
   auth: process.env.NOTION_TOKEN,
   notionVersion: '2025-09-03',
 });
+
+const GITHUB_API_BASE = 'https://api.github.com';
+const DOUBAN_COVER_CACHE_DIR = 'covers/douban';
+const IMAGE_REQUEST_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  Referer: 'https://book.douban.com/',
+  Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+};
 
 /**
  * Handles Notion feeds by grouping them by category and syncing each category
@@ -194,6 +204,140 @@ function getRawExternalImageUrl(itemData: {
   return url;
 }
 
+function encodeGitHubPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+function getImageFileNameFromUrl(url: string): string {
+  const { pathname } = new URL(url);
+  const fileName = decodeURIComponent(pathname.split('/').filter(Boolean).pop() || '');
+  const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
+
+  if (safeFileName) {
+    return safeFileName;
+  }
+
+  return 'douban-cover.jpg';
+}
+
+function buildCachedCoverPath(url: string): string {
+  return `${DOUBAN_COVER_CACHE_DIR}/${getImageFileNameFromUrl(url)}`;
+}
+
+function buildRawGitHubUrl(repo: string, branch: string, path: string): string {
+  return `https://raw.githubusercontent.com/${repo}/${branch}/${encodeGitHubPath(path)}`;
+}
+
+function isDoubanioUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.endsWith('doubanio.com');
+  } catch {
+    return false;
+  }
+}
+
+function getGitHubApiHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+async function githubContentExists(
+  repo: string,
+  branch: string,
+  path: string,
+  token: string,
+): Promise<boolean> {
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_BASE}/repos/${repo}/contents/${encodedPath}`;
+
+  try {
+    await got.get(url, {
+      searchParams: {
+        ref: branch,
+      },
+      headers: getGitHubApiHeaders(token),
+    });
+
+    return true;
+  } catch (error: any) {
+    if (error?.response?.statusCode === 404) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function uploadCoverToGitHub(
+  sourceUrl: string,
+  repo: string,
+  branch: string,
+  path: string,
+  token: string,
+): Promise<string> {
+  const imageResponse = await got.get(sourceUrl, {
+    responseType: 'buffer',
+    headers: IMAGE_REQUEST_HEADERS,
+  });
+  const contentTypeHeader = imageResponse.headers['content-type'];
+  const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
+
+  if (!contentType?.toLowerCase().startsWith('image/')) {
+    throw new Error(`Unexpected cover content type: ${contentType || 'unknown'}`);
+  }
+
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_BASE}/repos/${repo}/contents/${encodedPath}`;
+
+  await got.put(url, {
+    headers: getGitHubApiHeaders(token),
+    json: {
+      message: `Cache Douban cover ${getImageFileNameFromUrl(sourceUrl)}`,
+      content: imageResponse.body.toString('base64'),
+      branch,
+    },
+  });
+
+  return buildRawGitHubUrl(repo, branch, path);
+}
+
+async function cacheCoverForNotion(sourceUrl?: string): Promise<string | undefined> {
+  if (!sourceUrl || !isDoubanioUrl(sourceUrl)) {
+    return sourceUrl;
+  }
+
+  const repo = process.env.GITHUB_REPOSITORY;
+  const branch = process.env.GITHUB_REF_NAME || 'main';
+  const token = process.env.GITHUB_TOKEN;
+  const path = buildCachedCoverPath(sourceUrl);
+
+  try {
+    if (!repo || !token) {
+      throw new Error('Missing GITHUB_REPOSITORY or GITHUB_TOKEN.');
+    }
+
+    const rawUrl = buildRawGitHubUrl(repo, branch, path);
+    const exists = await githubContentExists(repo, branch, path, token);
+
+    if (exists) {
+      consola.info(`Using cached cover: ${rawUrl}`);
+      return rawUrl;
+    }
+
+    const uploadedUrl = await uploadCoverToGitHub(sourceUrl, repo, branch, path, token);
+
+    consola.success(`Cached Douban cover to GitHub: ${uploadedUrl}`);
+    return uploadedUrl;
+  } catch (error) {
+    consola.warn(`Failed to cache cover. Fall back to original cover url: ${sourceUrl}`);
+    consola.warn(error);
+    return sourceUrl;
+  }
+}
+
 /**
  * Inserts one item into a Notion data source.
  */
@@ -210,7 +354,7 @@ async function addItemToNotion(
   );
 
   try {
-    const rawCoverUrl = getRawExternalImageUrl(itemData);
+    const rawCoverUrl = await cacheCoverForNotion(getRawExternalImageUrl(itemData));
 
     const properties: Record<string, any> = {};
 
